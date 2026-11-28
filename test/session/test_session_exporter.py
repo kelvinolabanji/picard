@@ -36,7 +36,10 @@ from picard.session.constants import SessionConstants
 from picard.session.metadata_handler import MetadataHandler
 from picard.session.session_data import SessionItemLocation
 from picard.session.session_exporter import SessionExporter
-from picard.session.session_loader import ItemGrouper
+from picard.session.session_loader import (
+    ItemGrouper,
+    OverrideApplicator,
+)
 
 import pytest
 
@@ -165,9 +168,7 @@ def test_session_exporter_export_ui_state(session_exporter: SessionExporter, cfg
     tagger_mock.iter_all_files.return_value = []
     tagger_mock.albums = {'album-123': album_mock}
 
-    # Mock the diff method to return None (no overrides)
-    with patch.object(album_mock.metadata, "diff", return_value=None):
-        data = session_exporter.export_session(tagger_mock)
+    data = session_exporter.export_session(tagger_mock)
 
     assert data['expanded_albums'] == ["album-123"]
 
@@ -186,9 +187,7 @@ def test_session_exporter_export_ui_state_no_ui_item(session_exporter: SessionEx
     tagger_mock.iter_all_files.return_value = []
     tagger_mock.albums = {'album-123': album_mock}
 
-    # Mock the diff method to return None (no overrides)
-    with patch.object(album_mock.metadata, "diff", return_value=None):
-        data = session_exporter.export_session(tagger_mock)
+    data = session_exporter.export_session(tagger_mock)
 
     assert data['expanded_albums'] == []
 
@@ -217,22 +216,42 @@ def test_session_exporter_export_metadata_overrides(session_exporter: SessionExp
     tagger_mock.iter_all_files.return_value = []
     tagger_mock.albums = {'album-123': album_mock}
 
-    # Mock the diff and rawitems methods
-    diff_mock = Mock()
-    diff_mock.rawitems.return_value = [("albumartist", ["New Artist"])]
-    track_diff_mock = Mock()
-    track_diff_mock.rawitems.return_value = [("title", ["New Title"])]
-
-    with (
-        patch.object(album_mock.metadata, "diff", return_value=diff_mock),
-        patch.object(track_mock.metadata, "diff", return_value=track_diff_mock),
-    ):
-        data = session_exporter.export_session(tagger_mock)
+    data = session_exporter.export_session(tagger_mock)
 
     assert "album-123" in data['album_overrides']
     assert data['album_overrides']['album-123']['albumartist'] == ["New Artist"]
     assert "album-123" in data['album_track_overrides']
     assert data['album_track_overrides']['album-123']['track-456']['title'] == ["New Title"]
+
+
+@pytest.mark.parametrize('level', ['album', 'track'])
+@pytest.mark.parametrize('edit_title', [False, True])
+def test_override_deletion_round_trip(session_exporter, mock_tagger, cfg_options, level, edit_title):
+    track = Mock(id='track-1', metadata=Metadata(), scripted_metadata=Metadata())
+    album = Mock(spec=Album)
+    album.id = 'album-1'
+    album.metadata = Metadata()
+    album.orig_metadata = Metadata()
+    album.tracks = [track]
+    album.run_when_loaded.side_effect = lambda callback: callback()
+    mock_tagger.albums = {album.id: album}
+
+    item, original = (album, album.orig_metadata) if level == 'album' else (track, track.scripted_metadata)
+    original.update({'composer': 'Original composer', 'title': 'Original title'})
+    item.metadata.copy(original)
+    item.metadata['composer'] = []
+    if edit_title:
+        item.metadata['title'] = 'Edited title'
+
+    data = session_exporter.export_session(mock_tagger)
+    assert data['unmatched_albums'] == []
+
+    # The reloaded metadata may already lack Composer. Its deletion must still be recorded.
+    item.metadata = Metadata({'title': 'Original title'})
+    OverrideApplicator(Mock(loaded_albums=mock_tagger.albums)).apply(data, {})
+    assert 'composer' not in item.metadata
+    assert 'composer' in item.metadata.deleted_tags
+    assert item.metadata['title'] == ('Edited title' if edit_title else 'Original title')
 
 
 def test_session_exporter_export_unmatched_albums(session_exporter: SessionExporter, cfg_options) -> None:
@@ -249,9 +268,7 @@ def test_session_exporter_export_unmatched_albums(session_exporter: SessionExpor
     tagger_mock.iter_all_files.return_value = []
     tagger_mock.albums = {'album-123': album_mock}
 
-    # Mock the diff method to return None (no overrides)
-    with patch.object(album_mock.metadata, "diff", return_value=None):
-        data = session_exporter.export_session(tagger_mock)
+    data = session_exporter.export_session(tagger_mock)
 
     assert data['unmatched_albums'] == ["album-123"]
 
@@ -296,11 +313,7 @@ def test_session_exporter_export_albums_with_files(session_exporter: SessionExpo
     tagger_mock.iter_all_files.return_value = [file_mock]
     tagger_mock.albums = {'album-123': album_mock}
 
-    # Mock the diff method to return None (no overrides)
-    with (
-        patch.object(album_mock.metadata, "diff", return_value=None),
-        patch.object(session_exporter.location_detector, "detect") as mock_detect,
-    ):
+    with patch.object(session_exporter.location_detector, "detect") as mock_detect:
         mock_detect.return_value = SessionItemLocation(type="track", album_id="album-123")
         data = session_exporter.export_session(tagger_mock)
 
@@ -424,12 +437,7 @@ def test_session_exporter_export_metadata_overrides_excludes_length(
     tagger_mock.iter_all_files.return_value = []
     tagger_mock.albums = {'album-123': album_mock}
 
-    # Mock the diff method to return length override
-    diff_mock = Mock()
-    diff_mock.rawitems.return_value = [("length", ["300000"])]
-
-    with patch.object(album_mock.metadata, "diff", return_value=diff_mock):
-        data = session_exporter.export_session(tagger_mock)
+    data = session_exporter.export_session(tagger_mock)
 
     # Length should not be in overrides
     assert "album-123" not in data['album_overrides'] or "length" not in data['album_overrides']['album-123']
@@ -458,20 +466,7 @@ def test_session_exporter_export_metadata_overrides_excludes_internal_tags(
     tagger_mock.iter_all_files.return_value = []
     tagger_mock.albums = {'album-123': album_mock}
 
-    # Mock the diff methods
-    track_diff_mock = Mock()
-    track_diff_mock.rawitems.return_value = [("~internal", ["new_value"])]
-    album_diff_mock = Mock()
-    album_diff_mock.rawitems.return_value = []
+    data = session_exporter.export_session(tagger_mock)
 
-    with (
-        patch.object(track_mock.metadata, "diff", return_value=track_diff_mock),
-        patch.object(album_mock.metadata, "diff", return_value=album_diff_mock),
-    ):
-        data = session_exporter.export_session(tagger_mock)
-
-    # Internal tag should be in overrides (current implementation includes them)
-    assert "album-123" in data['album_track_overrides']
-    assert "track-456" in data['album_track_overrides']['album-123']
-    assert "~internal" in data['album_track_overrides']['album-123']['track-456']
-    assert data['album_track_overrides']['album-123']['track-456']['~internal'] == ["new_value"]
+    assert data['album_track_overrides'] == {}
+    assert data['unmatched_albums'] == [album_mock.id]

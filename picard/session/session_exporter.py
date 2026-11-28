@@ -234,14 +234,7 @@ class SessionExporter:
 
             if base_md is not None:
                 diff = file.metadata.diff(base_md)
-                # An empty value list represents an explicit deletion in the session.
-                changes = {tag: [] for tag in sorted(diff.deleted_tags)}
-                changes.update(diff.rawitems())
-                delta_tags = {
-                    k: v
-                    for k, v in changes.items()
-                    if k not in EXCLUDED_OVERRIDE_TAGS and not str(k).startswith(INTERNAL_TAG_PREFIX)
-                }
+                delta_tags = self._extract_metadata_overrides(diff)
                 if delta_tags:
                     entry['metadata'] = {'tags': delta_tags}
 
@@ -283,7 +276,14 @@ class SessionExporter:
         dict[str, list[Any]]
             Dictionary of metadata overrides with values converted to lists.
         """
-        return {k: MetadataHandler.as_list(v) for k, v in diff.rawitems() if k not in EXCLUDED_OVERRIDE_TAGS}
+        # An empty value list represents an explicit deletion in the session.
+        changes = {tag: [] for tag in sorted(diff.deleted_tags)}
+        changes.update(diff.rawitems())
+        return {
+            tag: MetadataHandler.as_list(values)
+            for tag, values in changes.items()
+            if tag not in EXCLUDED_OVERRIDE_TAGS and not tag.startswith(INTERNAL_TAG_PREFIX)
+        }
 
     def _export_metadata_overrides(self, tagger: Any) -> MetadataOverridesResult:
         """Export metadata overrides for albums and tracks.
@@ -318,22 +318,24 @@ class SessionExporter:
 
             # Album-level diffs vs orig_metadata
             album_diff = album.metadata.diff(album.orig_metadata)
-            if album_diff:
-                album_meta_overrides[album.id] = SessionExporter._extract_metadata_overrides(album_diff)
+            album_tags = self._extract_metadata_overrides(album_diff)
+            if album_tags:
+                album_meta_overrides[album.id] = album_tags
 
             # Track-level overrides
             overrides_for_album: dict[str, TagOverrideMap] = {}
             for track in album.tracks:
                 # The difference to scripted_metadata are user edits made in UI
                 diff = track.metadata.diff(track.scripted_metadata)
-                if diff:
-                    overrides_for_album[track.id] = SessionExporter._extract_metadata_overrides(diff)
+                track_tags = self._extract_metadata_overrides(diff)
+                if track_tags:
+                    overrides_for_album[track.id] = track_tags
 
             if overrides_for_album:
                 album_overrides[album.id] = overrides_for_album
 
             # If album has no files matched and no overrides, it's an unmatched album
-            if not has_files and not album_diff and not overrides_for_album:
+            if not has_files and not album_tags and not overrides_for_album:
                 unmatched_albums.append(album.id)
 
         return MetadataOverridesResult(

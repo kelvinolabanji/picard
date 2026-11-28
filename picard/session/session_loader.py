@@ -548,7 +548,10 @@ class OverrideApplicator:
                 for tag, values in tags.items():
                     if tag in EXCLUDED_OVERRIDE_TAGS:
                         continue
-                    tr.metadata[tag] = MetadataHandler.as_list(values)
+                    if values == []:
+                        del tr.metadata[tag]
+                    else:
+                        tr.metadata[tag] = MetadataHandler.as_list(values)
                 tr.update()
 
         album.run_when_loaded(run)
@@ -556,7 +559,10 @@ class OverrideApplicator:
     def _apply_album_overrides(self, album: Album, overrides: dict[str, list[Any]]) -> None:
         def run() -> None:
             for tag, values in overrides.items():
-                album.metadata[tag] = MetadataHandler.as_list(values)
+                if values == []:
+                    del album.metadata[tag]
+                else:
+                    album.metadata[tag] = MetadataHandler.as_list(values)
             album.update(update_tracks=False)
 
         album.run_when_loaded(run)
