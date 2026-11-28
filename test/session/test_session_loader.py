@@ -221,14 +221,19 @@ def test_restoring_cached_album_announces_new_album(tmp_path, cfg_options):
     loader = SessionLoader(tagger)
     path = _write_session(tmp_path, {'version': 1, 'mb_cache': {'album-123': {'id': 'album-123'}}, 'items': []})
     announced = []
-    workspace_events().album_added.connect(announced.append)
+
+    def on_album_added(album):
+        announced.append(album)
+
+    events = workspace_events()
+    events.album_added.connect(on_album_added)
     try:
         with patch('picard.session.session_loader.Album') as album_cls:
             loader.load_from_path(path)
             assert announced == [album_cls.return_value]
             assert tagger.albums['album-123'] is announced[0]
     finally:
-        workspace_events().album_added.disconnect(announced.append)
+        events.album_added.disconnect(on_album_added)
 
 
 def test_session_loader_requests_allowed(tmp_path: Path, mock_single_shot, cfg_options) -> None:
